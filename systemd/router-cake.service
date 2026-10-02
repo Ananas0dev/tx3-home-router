@@ -1,0 +1,11 @@
+[Unit]
+Description=Router CAKE SQM for WAN PPPoE
+After=pppoe-wan.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/router-cake
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target

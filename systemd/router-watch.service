@@ -1,0 +1,14 @@
+[Unit]
+Description=Router outage and latency recorder
+After=network-online.target pppoe-wan.service
+Wants=pppoe-wan.service
+
+[Service]
+Type=simple
+ExecStart=/usr/local/sbin/router-watch
+Restart=always
+RestartSec=2
+Nice=10
+
+[Install]
+WantedBy=multi-user.target

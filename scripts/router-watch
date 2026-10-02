@@ -1,0 +1,227 @@
+#!/bin/bash
+
+LOG=/var/log/router-watch.log
+EVENT=/var/log/router-events.log
+CAKELOG=/var/log/router-cake-stats.log
+
+MAX_LOG=40000
+MAX_EVENT=10000
+MAX_CAKE=10000
+
+ping1()
+{
+    local DEV="$1"
+    local DST="$2"
+
+    ping -4 -I "$DEV" -n -c 1 -W 1 "$DST" 2>/dev/null |
+        awk -F'time=' '
+            /time=/ {
+                split($2,a," ")
+                print a[1]
+                found=1
+            }
+            END {
+                if (!found) print "X"
+            }'
+}
+
+carrier()
+{
+    cat "/sys/class/net/$1/carrier" 2>/dev/null || echo X
+}
+
+stat()
+{
+    cat "/sys/class/net/$1/statistics/$2" 2>/dev/null || echo 0
+}
+
+trim_log()
+{
+    local FILE="$1"
+    local MAX="$2"
+    local KEEP="$3"
+    local N
+
+    N="$(wc -l < "$FILE" 2>/dev/null || echo 0)"
+
+    if [ "$N" -gt "$MAX" ]; then
+        tail -n "$KEEP" "$FILE" > "${FILE}.tmp"
+        mv "${FILE}.tmp" "$FILE"
+    fi
+}
+
+event()
+{
+    printf '%s %s\n' "$TS" "$*" >> "$EVENT"
+}
+
+PREV_E0="$(carrier eth0)"
+PREV_E1="$(carrier eth1)"
+PREV_PPP=1
+
+PREV_E0_RXERR="$(stat eth0 rx_errors)"
+PREV_E0_TXERR="$(stat eth0 tx_errors)"
+PREV_E0_RXDROP="$(stat eth0 rx_dropped)"
+PREV_E0_TXDROP="$(stat eth0 tx_dropped)"
+
+PREV_E1_RXERR="$(stat eth1 rx_errors)"
+PREV_E1_TXERR="$(stat eth1 tx_errors)"
+PREV_E1_RXDROP="$(stat eth1 rx_dropped)"
+PREV_E1_TXDROP="$(stat eth1 tx_dropped)"
+
+COUNT=0
+
+while :; do
+    TS="$(date '+%Y-%m-%d %H:%M:%S')"
+
+    E0="$(carrier eth0)"
+    E1="$(carrier eth1)"
+
+    if ip -4 addr show dev ppp0 2>/dev/null | grep -q 'inet '; then
+        PPP=1
+    else
+        PPP=0
+    fi
+
+    HA35="$(ping1 eth1 198.51.100.1)"
+
+    PEER="$(ip -4 route show dev ppp0 2>/dev/null |
+        awk '$1 ~ /^[0-9]+\./ {print $1; exit}')"
+
+    if [ -n "$PEER" ]; then
+        STC="$(ping1 ppp0 "$PEER")"
+    else
+        STC=X
+    fi
+
+    NET="$(ping1 ppp0 203.0.113.10)"
+
+    if [ "$NET" = X ]; then
+        NET="$(ping1 ppp0 203.0.113.11)"
+    fi
+
+    printf '%s eth0=%s eth1=%s ppp=%s ha35=%s stc=%s net=%s\n' \
+        "$TS" "$E0" "$E1" "$PPP" "$HA35" "$STC" "$NET" >> "$LOG"
+
+    # Physical / PPP state transitions
+    [ "$E0" != "$PREV_E0" ] &&
+        event "TAG=ETH0_CARRIER old=$PREV_E0 new=$E0"
+
+    [ "$E1" != "$PREV_E1" ] &&
+        event "TAG=ETH1_CARRIER old=$PREV_E1 new=$E1"
+
+    [ "$PPP" != "$PREV_PPP" ] &&
+        event "TAG=PPP_STATE old=$PREV_PPP new=$PPP"
+
+    # Reachability failures
+    [ "$HA35" = X ] &&
+        event "TAG=HA35_TIMEOUT"
+
+    [ "$STC" = X ] &&
+        event "TAG=STC_TIMEOUT"
+
+    [ "$NET" = X ] &&
+        event "TAG=NET_TIMEOUT"
+
+    # Latency relative to the modem itself.
+    # This helps separate local/modem delay from the DSL/STC side.
+    if [ "$HA35" != X ] && [ "$STC" != X ]; then
+        EXTRA="$(awk -v s="$STC" -v h="$HA35" 'BEGIN {printf "%.1f", s-h}')"
+
+        if awk -v x="$EXTRA" 'BEGIN {exit !(x >= 140)}'; then
+            event "TAG=STC_AWFUL ha35_ms=$HA35 stc_ms=$STC extra_ms=$EXTRA"
+
+            {
+                echo "===== EVENT $TS STC_AWFUL extra_ms=$EXTRA ====="
+                echo "--- ppp0 upload ---"
+                tc -s qdisc show dev ppp0
+                echo "--- ifb-wan download ---"
+                tc -s qdisc show dev ifb-wan
+            } >> "$CAKELOG" 2>&1
+
+        elif awk -v x="$EXTRA" 'BEGIN {exit !(x >= 70)}'; then
+            event "TAG=STC_BAD ha35_ms=$HA35 stc_ms=$STC extra_ms=$EXTRA"
+
+            {
+                echo "===== EVENT $TS STC_BAD extra_ms=$EXTRA ====="
+                echo "--- ppp0 upload ---"
+                tc -s qdisc show dev ppp0
+                echo "--- ifb-wan download ---"
+                tc -s qdisc show dev ifb-wan
+            } >> "$CAKELOG" 2>&1
+
+        elif awk -v x="$EXTRA" 'BEGIN {exit !(x >= 30)}'; then
+            event "TAG=STC_WARN ha35_ms=$HA35 stc_ms=$STC extra_ms=$EXTRA"
+        fi
+    fi
+
+    if [ "$NET" != X ]; then
+        if awk -v x="$NET" 'BEGIN {exit !(x >= 300)}'; then
+            event "TAG=NET_AWFUL rtt_ms=$NET"
+        elif awk -v x="$NET" 'BEGIN {exit !(x >= 180)}'; then
+            event "TAG=NET_BAD rtt_ms=$NET"
+        elif awk -v x="$NET" 'BEGIN {exit !(x >= 120)}'; then
+            event "TAG=NET_WARN rtt_ms=$NET"
+        fi
+    fi
+
+    # Ethernet error/drop counters
+    E0_RXERR="$(stat eth0 rx_errors)"
+    E0_TXERR="$(stat eth0 tx_errors)"
+    E0_RXDROP="$(stat eth0 rx_dropped)"
+    E0_TXDROP="$(stat eth0 tx_dropped)"
+
+    E1_RXERR="$(stat eth1 rx_errors)"
+    E1_TXERR="$(stat eth1 tx_errors)"
+    E1_RXDROP="$(stat eth1 rx_dropped)"
+    E1_TXDROP="$(stat eth1 tx_dropped)"
+
+    if [ "$E0_RXERR" != "$PREV_E0_RXERR" ] ||
+       [ "$E0_TXERR" != "$PREV_E0_TXERR" ] ||
+       [ "$E0_RXDROP" != "$PREV_E0_RXDROP" ] ||
+       [ "$E0_TXDROP" != "$PREV_E0_TXDROP" ]; then
+
+        event "TAG=ETH0_COUNTER_CHANGE rxerr=$E0_RXERR txerr=$E0_TXERR rxdrop=$E0_RXDROP txdrop=$E0_TXDROP"
+    fi
+
+    if [ "$E1_RXERR" != "$PREV_E1_RXERR" ] ||
+       [ "$E1_TXERR" != "$PREV_E1_TXERR" ] ||
+       [ "$E1_RXDROP" != "$PREV_E1_RXDROP" ] ||
+       [ "$E1_TXDROP" != "$PREV_E1_TXDROP" ]; then
+
+        event "TAG=ETH1_COUNTER_CHANGE rxerr=$E1_RXERR txerr=$E1_TXERR rxdrop=$E1_RXDROP txdrop=$E1_TXDROP"
+    fi
+
+    PREV_E0="$E0"
+    PREV_E1="$E1"
+    PREV_PPP="$PPP"
+
+    PREV_E0_RXERR="$E0_RXERR"
+    PREV_E0_TXERR="$E0_TXERR"
+    PREV_E0_RXDROP="$E0_RXDROP"
+    PREV_E0_TXDROP="$E0_TXDROP"
+
+    PREV_E1_RXERR="$E1_RXERR"
+    PREV_E1_TXERR="$E1_TXERR"
+    PREV_E1_RXDROP="$E1_RXDROP"
+    PREV_E1_TXDROP="$E1_TXDROP"
+
+    # CAKE snapshot approximately once per minute.
+    COUNT=$((COUNT + 1))
+
+    if [ "$COUNT" -ge 30 ]; then
+        {
+            echo "===== $TS ====="
+            tc -s qdisc show dev ppp0
+            tc -s qdisc show dev ifb-wan
+        } >> "$CAKELOG" 2>&1
+
+        COUNT=0
+    fi
+
+    trim_log "$LOG" "$MAX_LOG" 30000
+    trim_log "$EVENT" "$MAX_EVENT" 7000
+    trim_log "$CAKELOG" "$MAX_CAKE" 7000
+
+    sleep 1
+done

@@ -1,0 +1,28 @@
+#!/bin/sh
+
+#
+# pppd recreates ppp0 on reconnect.
+# TC qdiscs/filters attached to the old ppp0 disappear with it.
+#
+# Reapply CAKE and the V4 realtime layer shortly after every successful
+# PPP IPv4 bring-up.
+#
+
+(
+    sleep 1
+
+    systemctl restart router-cake.service
+
+    if systemctl is-active --quiet router-cake.service; then
+        systemctl restart tx3-qos-v4.service
+    fi
+
+    {
+        echo "$(date -Ins) PPP_QOS_REFRESH"
+        tc qdisc show dev ppp0
+        tc filter show dev ppp0 ingress 2>/dev/null
+    } >>/var/log/router-qos-refresh.log 2>&1
+
+) >/dev/null 2>&1 &
+
+exit 0

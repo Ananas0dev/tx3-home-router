@@ -1,0 +1,9 @@
+[Match]
+Name=eth1
+
+[Network]
+Address=198.51.100.2/24
+DHCP=no
+LinkLocalAddressing=no
+IPv6AcceptRA=no
+ConfigureWithoutCarrier=yes

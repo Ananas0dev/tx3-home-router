@@ -1,0 +1,93 @@
+# Sanitized persistent file; not the complete running ruleset. See ../README.md.
+#!/usr/sbin/nft -f
+
+flush ruleset
+
+table inet nat {
+    chain prerouting {
+        type nat hook prerouting priority 0; policy accept;
+    }
+
+    chain postrouting {
+        type nat hook postrouting priority 100; policy accept;
+
+        oifname "ppp0" masquerade
+        oifname "eth1" ip saddr 192.0.2.0/24 ip daddr 198.51.100.1 masquerade comment "HA35_MANAGEMENT_NAT"
+    }
+}
+
+table inet filter {
+    chain input {
+        type filter hook input priority 0; policy drop;
+
+        ct state established,related accept
+        iifname "lo" accept
+        # Services intentionally exposed to the trusted home LAN.
+        iifname "eth0" udp dport 67 accept comment "LAN_DHCP"
+        iifname "eth0" udp dport 53 accept comment "LAN_DNS_UDP"
+        iifname "eth0" tcp dport 53 accept comment "LAN_DNS_TCP"
+        iifname "eth0" tcp dport { 80, 443 } accept comment "LAN_NGINX"
+        iifname "eth0" tcp dport 22 accept comment "LAN_SSH"
+        iifname "eth0" udp dport 5353 accept comment "LAN_MDNS"
+
+        iifname "eth0" icmp type echo-request accept comment "LAN_PING"
+        iifname "eth0" icmpv6 type echo-request accept comment "LAN_PING6"
+    }
+
+    chain forward {
+        type filter hook forward priority 0; policy drop;
+
+        # Clamp LAN TCP to the actual PPPoE path MTU.
+        iifname "eth0" oifname "ppp0" \
+            tcp flags syn \
+            tcp option maxseg size set rt mtu
+
+        # LAN -> Internet.
+        iifname "eth0" oifname "ppp0" accept
+
+        # Internet replies -> LAN.
+        iifname "ppp0" oifname "eth0" \
+            ct state established,related accept
+
+        # LAN -> HA35 management only.
+        iifname "eth0" oifname "eth1" \
+            ip saddr 192.0.2.0/24 \
+            ip daddr 198.51.100.1 \
+            accept
+
+        # HA35 replies -> LAN.
+        iifname "eth1" oifname "eth0" \
+            ip saddr 198.51.100.1 \
+            ip daddr 192.0.2.0/24 \
+            ct state established,related accept
+    }
+
+    chain output {
+        type filter hook output priority 0; policy accept;
+    }
+}
+
+table inet qos {
+    chain prerouting {
+        type filter hook prerouting priority mangle; policy accept;
+
+        udp dport {
+            3074-3097, 3478-3481, 5060-5061,
+            7777-7878, 27000-28000, 51820-51830
+        } ip dscp set cs5
+
+        tcp dport {
+            3074-3097, 3478-3481, 5060-5061,
+            27000-28000
+        } ip dscp set cs5
+
+        udp dport { 53, 123, 853 } ip dscp set cs6
+        tcp dport { 53, 853 } ip dscp set cs6
+
+        meta l4proto icmp ip dscp set cs6
+        meta l4proto ipv6-icmp ip6 dscp set cs6
+
+        tcp dport { 6881-6889, 51413 } ip dscp set cs1
+        udp dport { 6881-6889, 51413 } ip dscp set cs1
+    }
+}

@@ -1,0 +1,66 @@
+#!/bin/sh
+
+WAN=ppp0
+IFB=ifb-wan
+
+UP=450kbit
+DOWN=10000kbit
+
+# ppp0 must have completed IPCP before CAKE is installed.
+N=0
+while [ "$N" -lt 60 ]; do
+    if ip -4 addr show dev "$WAN" 2>/dev/null | grep -q 'inet '; then
+        break
+    fi
+    sleep 1
+    N=$((N + 1))
+done
+
+if ! ip -4 addr show dev "$WAN" 2>/dev/null | grep -q 'inet '; then
+    echo "router-cake: $WAN did not become IPv4-ready" >&2
+    exit 1
+fi
+
+# Remove stale state from either topology.
+tc qdisc del dev eth1 clsact 2>/dev/null || true
+tc qdisc del dev eth1 root 2>/dev/null || true
+tc qdisc del dev "$WAN" clsact 2>/dev/null || true
+tc qdisc del dev "$WAN" root 2>/dev/null || true
+tc qdisc del dev "$IFB" root 2>/dev/null || true
+ip link del "$IFB" 2>/dev/null || true
+
+modprobe ifb
+
+ip link add "$IFB" type ifb
+ip link set "$IFB" up
+
+# Upload:
+# ppp0 exposes IP packets. pppoe-llcsnap accounts for the
+# PPPoE + Ethernet + LLC/SNAP + ATM framing on this ADSL link.
+tc qdisc replace dev "$WAN" root cake \
+    bandwidth "$UP" \
+    diffserv4 \
+    dual-srchost nat \
+    nowash \
+    ack-filter \
+    split-gso \
+    rtt 100ms \
+    pppoe-llcsnap
+
+# Download: redirect ppp0 ingress into IFB.
+tc qdisc add dev "$WAN" handle ffff: clsact
+
+tc filter add dev "$WAN" ingress \
+    matchall \
+    action mirred egress redirect dev "$IFB"
+
+tc qdisc replace dev "$IFB" root cake \
+    bandwidth "$DOWN" \
+    diffserv4 \
+    dual-dsthost nat \
+    nowash \
+    ingress \
+    no-ack-filter \
+    split-gso \
+    rtt 100ms \
+    pppoe-llcsnap

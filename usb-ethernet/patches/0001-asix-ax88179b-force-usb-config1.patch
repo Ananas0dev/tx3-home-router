@@ -1,0 +1,66 @@
+diff --git a/drivers/usb/core/generic.c b/drivers/usb/core/generic.c
+index b134bff5c..7c4676bb6 100644
+--- a/drivers/usb/core/generic.c
++++ b/drivers/usb/core/generic.c
+@@ -22,6 +22,7 @@
+ #include <linux/usb.h>
+ #include <linux/usb/hcd.h>
+ #include <uapi/linux/usb/audio.h>
++#include <linux/usb/quirks.h>
+ #include "usb.h"
+ 
+ static inline const char *plural(int n)
+@@ -158,6 +159,18 @@ int usb_choose_configuration(struct usb_device *udev)
+ 			 */
+ 			continue;
+ 		}
++                /*
++                 * This quirk forces the selection of a vendor-specific
++                 * interface class configuration when multiple configurations
++                 * are present.
++                 */
++                if (num_configs > 1 &&
++                    udev->descriptor.bDeviceClass == USB_CLASS_PER_INTERFACE &&
++                    udev->quirks & USB_QUIRK_CHOOSE_VENDOR_SPEC_CFG &&
++                    desc && desc->bInterfaceClass == USB_CLASS_VENDOR_SPEC) {
++                        best = c;
++                        break;
++                }
+ 
+ 		/* When the first config's first interface is one of Microsoft's
+ 		 * pet nonstandard Ethernet-over-USB protocols, ignore it unless
+diff --git a/drivers/usb/core/quirks.c b/drivers/usb/core/quirks.c
+index 6ed380599..0ae3eff0f 100644
+--- a/drivers/usb/core/quirks.c
++++ b/drivers/usb/core/quirks.c
+@@ -614,7 +614,9 @@ static const struct usb_device_id usb_quirk_list[] = {
+ 
+ 	/* INTEL VALUE SSD */
+ 	{ USB_DEVICE(0x8086, 0xf1a5), .driver_info = USB_QUIRK_RESET_RESUME },
+-
++    /* ASIX AX88179B */
++    { USB_DEVICE(0x0b95, 0x1790),
++        .driver_info = USB_QUIRK_CHOOSE_VENDOR_SPEC_CFG },
+ 	{ }  /* terminating entry must be last */
+ };
+ 
+@@ -622,7 +624,6 @@ static const struct usb_device_id usb_interface_quirk_list[] = {
+ 	/* Logitech UVC Cameras */
+ 	{ USB_VENDOR_AND_INTERFACE_INFO(0x046d, USB_CLASS_VIDEO, 1, 0),
+ 	  .driver_info = USB_QUIRK_RESET_RESUME },
+-
+ 	{ }  /* terminating entry must be last */
+ };
+ 
+diff --git a/include/linux/usb/quirks.h b/include/linux/usb/quirks.h
+index b3cc7beab..41ba5d682 100644
+--- a/include/linux/usb/quirks.h
++++ b/include/linux/usb/quirks.h
+@@ -80,5 +80,6 @@
+ 
+ /* Device claims zero configurations, forcing to 1 */
+ #define USB_QUIRK_FORCE_ONE_CONFIG		BIT(18)
+-
++/* force selection of vendor-specific configuration */
++#define USB_QUIRK_CHOOSE_VENDOR_SPEC_CFG        BIT(19)
+ #endif /* __LINUX_USB_QUIRKS_H */

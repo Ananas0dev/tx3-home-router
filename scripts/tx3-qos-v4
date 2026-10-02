@@ -1,0 +1,270 @@
+#!/bin/sh
+
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+
+OBJ=/usr/local/lib/tx3-qos/flow_classifier_v4.o
+
+ETH0=eth0
+WAN=ppp0
+IFB=ifb-wan
+
+PREF_BPF=12348
+PREF_CTINFO=10
+
+ROOT=/sys/fs/bpf/tx3-qos-v4
+PROGS=$ROOT/progs
+MAPS=$ROOT/maps
+
+# The ELF function is still named classify_udp_v3.
+# This is cosmetic; the object itself is the verified V4 build.
+PROG_PIN=$PROGS/classify_udp_v3
+MAP_PIN=$MAPS/flow_states
+
+NFT_TABLE=v4_realtime_qos
+
+
+stop_qos()
+{
+    tc filter del dev "$ETH0" ingress pref "$PREF_BPF" \
+        2>/dev/null || true
+
+    tc filter del dev "$ETH0" egress pref "$PREF_BPF" \
+        2>/dev/null || true
+
+    #
+    # Removing our higher-priority rule immediately exposes the
+    # original router-cake pref 49152 mirred rule.
+    #
+    tc filter del dev "$WAN" ingress pref "$PREF_CTINFO" \
+        2>/dev/null || true
+
+    nft delete table inet "$NFT_TABLE" \
+        2>/dev/null || true
+
+    rm -rf "$ROOT" 2>/dev/null || true
+}
+
+
+fail()
+{
+    echo "tx3-qos-v4: ERROR: $*" >&2
+    stop_qos
+    exit 1
+}
+
+
+start_qos()
+{
+    #
+    # Remove only stale objects owned by this service.
+    #
+    stop_qos
+
+    [ -r "$OBJ" ] ||
+        fail "BPF object missing: $OBJ"
+
+    [ "$(pgrep -xc pppd 2>/dev/null || true)" = "1" ] ||
+        fail "expected exactly one pppd"
+
+    ip link show "$ETH0" >/dev/null 2>&1 ||
+        fail "$ETH0 missing"
+
+    ip link show "$WAN" >/dev/null 2>&1 ||
+        fail "$WAN missing"
+
+    ip link show "$IFB" >/dev/null 2>&1 ||
+        fail "$IFB missing"
+
+    tc qdisc show dev "$WAN" |
+        grep -q 'qdisc cake' ||
+        fail "upload CAKE missing"
+
+    tc qdisc show dev "$IFB" |
+        grep -q 'qdisc cake' ||
+        fail "download CAKE missing"
+
+    #
+    # The original known-good router-cake redirect MUST remain.
+    #
+    tc filter show dev "$WAN" ingress |
+        grep -q 'pref 49152' ||
+        fail "original ppp0 -> ifb-wan mirred missing"
+
+    modprobe act_ctinfo ||
+        fail "act_ctinfo unavailable"
+
+    #
+    # eth0 clsact is harmless by itself. We deliberately do not
+    # delete it in stop_qos because another future filter could share it.
+    #
+    if ! tc qdisc show dev "$ETH0" | grep -q 'qdisc clsact'; then
+        tc qdisc add dev "$ETH0" clsact ||
+            fail "could not create eth0 clsact"
+    fi
+
+    mkdir -p "$PROGS" "$MAPS" ||
+        fail "could not create bpffs directories"
+
+    #
+    # Load exactly one V4 program instance so ingress and egress
+    # genuinely share one flow_states map.
+    #
+    bpftool prog loadall "$OBJ" "$PROGS" \
+        type classifier \
+        pinmaps "$MAPS" ||
+        fail "BPF load failed"
+
+    [ -e "$PROG_PIN" ] ||
+        fail "program pin missing"
+
+    [ -e "$MAP_PIN" ] ||
+        fail "flow map pin missing"
+
+    tc filter add dev "$ETH0" ingress \
+        protocol all \
+        pref "$PREF_BPF" \
+        bpf da object-pinned "$PROG_PIN" ||
+        fail "eth0 ingress BPF attach failed"
+
+    tc filter add dev "$ETH0" egress \
+        protocol all \
+        pref "$PREF_BPF" \
+        bpf da object-pinned "$PROG_PIN" ||
+        fail "eth0 egress BPF attach failed"
+
+    #
+    # Existing QoS nft chain runs at mangle (-150).
+    # This chain runs immediately afterward at -140.
+    #
+    # REALTIME:
+    #   skb marker -> AF41
+    #   save AF41 in conntrack mark
+    #   clear temporary skb marker
+    #
+    # No longer REALTIME:
+    #   clear only the conntrack bits owned by V4.
+    #
+    nft -f - <<NFT
+table inet $NFT_TABLE {
+    chain prerouting {
+        type filter hook prerouting priority -140; policy accept;
+
+        iifname "$ETH0" \
+        meta l4proto udp \
+        meta mark & 0x40000000 == 0 \
+        ct mark & 0xfd000000 != 0 \
+        ct mark set ct mark & 0x02ffffff \
+        counter \
+        comment "V4_CLEAR_STALE_REALTIME"
+
+        iifname "$ETH0" \
+        meta mark & 0x40000000 != 0 \
+        ip dscp set af41 \
+        ct mark set (ct mark & 0x02ffffff) | 0x89000000 \
+        meta mark set meta mark & 0xbfffffff \
+        counter \
+        comment "V4_REALTIME_TO_CS5"
+    }
+}
+NFT
+
+    [ "$?" = 0 ] ||
+        fail "nft realtime table install failed"
+
+    #
+    # Higher priority than the original pref 49152 redirect.
+    #
+    # Download:
+    #   conntrack AF41 -> packet DSCP AF41 -> redirect -> ifb-wan CAKE
+    #
+    # Original pref 49152 is NEVER deleted.
+    #
+    tc filter add dev "$WAN" ingress \
+        protocol all \
+        pref "$PREF_CTINFO" \
+        matchall \
+        action ctinfo \
+            dscp 0xfc000000 0x01000000 \
+            pipe \
+        action mirred \
+            egress redirect dev "$IFB" ||
+        fail "ctinfo/mirred install failed"
+
+    #
+    # Final sanity checks.
+    #
+    tc filter show dev "$ETH0" ingress |
+        grep -q "pref $PREF_BPF" ||
+        fail "ingress V4 verification failed"
+
+    tc filter show dev "$ETH0" egress |
+        grep -q "pref $PREF_BPF" ||
+        fail "egress V4 verification failed"
+
+    tc filter show dev "$WAN" ingress |
+        grep -q "pref $PREF_CTINFO " ||
+        fail "ctinfo verification failed"
+
+    tc filter show dev "$WAN" ingress |
+        grep -q 'pref 49152' ||
+        fail "original mirred disappeared"
+
+    nft list table inet "$NFT_TABLE" >/dev/null 2>&1 ||
+        fail "nft table verification failed"
+
+    echo "tx3-qos-v4: active"
+}
+
+
+status_qos()
+{
+    echo '===== V4 BPF ====='
+    tc filter show dev "$ETH0" ingress 2>/dev/null |
+        grep -A1 "pref $PREF_BPF" || true
+
+    tc filter show dev "$ETH0" egress 2>/dev/null |
+        grep -A1 "pref $PREF_BPF" || true
+
+    echo
+    echo '===== V4 NFT ====='
+    nft list table inet "$NFT_TABLE" 2>/dev/null || true
+
+    echo
+    echo '===== DOWNLOAD CTINFO ====='
+    tc -s filter show dev "$WAN" ingress pref "$PREF_CTINFO" \
+        2>/dev/null || true
+
+    echo
+    echo '===== ORIGINAL FALLBACK ====='
+    tc filter show dev "$WAN" ingress 2>/dev/null |
+        grep -A6 -B1 'pref 49152' || true
+
+    echo
+    echo '===== CAKE ====='
+    tc qdisc show dev "$WAN" 2>/dev/null || true
+    tc qdisc show dev "$IFB" 2>/dev/null || true
+
+    echo
+    echo "pppd_count=$(pgrep -xc pppd 2>/dev/null || true)"
+}
+
+
+case "${1:-}" in
+    start)
+        start_qos
+        ;;
+    stop)
+        stop_qos
+        ;;
+    restart)
+        stop_qos
+        start_qos
+        ;;
+    status)
+        status_qos
+        ;;
+    *)
+        echo "usage: $0 {start|stop|restart|status}" >&2
+        exit 2
+        ;;
+esac

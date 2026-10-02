@@ -1,0 +1,17 @@
+[Unit]
+Description=TX3 automatic realtime flow QoS
+After=pppoe-wan.service router-cake.service
+Wants=router-cake.service
+PartOf=router-cake.service
+ConditionPathExists=/usr/local/lib/tx3-qos/flow_classifier_v4.o
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/sbin/tx3-qos-v4 start
+ExecStop=/usr/local/sbin/tx3-qos-v4 stop
+TimeoutStartSec=30
+TimeoutStopSec=15
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,17 @@
+#!/bin/sh
+
+tries=0
+
+while [ "$tries" -lt 150 ]; do
+    if ip -4 addr show dev eth0 2>/dev/null |
+       grep -q 'inet 192\.0\.2\.1/24'; then
+        echo "LAN ready: eth0 has 192.0.2.1/24"
+        exit 0
+    fi
+
+    tries=$((tries + 1))
+    sleep 0.2
+done
+
+echo "LAN not ready: eth0 did not get 192.0.2.1/24 within 30 seconds" >&2
+exit 1

@@ -1,0 +1,16 @@
+[Unit]
+Description=WAN PPPoE WAN
+After=systemd-networkd.service
+Wants=systemd-networkd.service
+
+[Service]
+Type=simple
+ExecStartPre=/sbin/modprobe ppp_generic
+ExecStartPre=/sbin/modprobe pppox
+ExecStartPre=/sbin/modprobe pppoe
+ExecStart=/usr/sbin/pppd call wan nodetach
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

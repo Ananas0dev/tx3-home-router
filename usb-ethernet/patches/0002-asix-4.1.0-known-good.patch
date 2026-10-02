@@ -1,0 +1,48 @@
+--- a/ax_config.h
++++ b/ax_config.h
+@@ -9,7 +9,7 @@
+ #define ENABLE_AUTODETACH_FUNC      0
+ #define ENABLE_MAC_PASS             0
+ #define ENABLE_INT_AGGRESSIVE       1
+-#define ENABLE_INT_POLLING          0
++#define ENABLE_INT_POLLING          1
+ #define ENABLE_AUTOSUSPEND          0
+ #define ENABLE_TX_TASKLET           0
+ #define ENABLE_RX_TASKLET           0
+@@ -64,7 +64,7 @@
+ #endif
+ 
+ #if (ENABLE_INT_POLLING == 1)
+-    #undef  ENABLE_INT_POLLING/
++    #undef  ENABLE_INT_POLLING
+     #define ENABLE_INT_POLLING
+ #else
+     #undef  ENABLE_INT_POLLING
+--- a/ax_main.c
++++ b/ax_main.c
+@@ -2606,10 +2606,8 @@
+ 		axdev->ep1_bytes_per_interval = (udev->speed <= USB_SPEED_HIGH) 
+ 			? 8 : le16_to_cpu(comp->wBytesPerInterval);
+ #ifdef ENABLE_INT_POLLING
+-	if (axdev->ep1_bytes_per_interval == 0)
+-    	axdev->int_polling_enable = true;
+-	else
+-    	axdev->int_polling_enable = false;
++	/* TEST: force PHY polling; interrupt endpoint never completes on this AX88179B */
++	axdev->int_polling_enable = true;
+ #endif
+ 
+ 	device_set_wakeup_enable(&udev->dev, ax_can_wakeup(axdev));
+@@ -3052,7 +3050,11 @@
+ #endif
+ };
+ 
+-#if LINUX_VERSION_CODE < KERNEL_VERSION(5, 7, 0)
++/*
++ * TEST: USB core already selects the vendor-specific configuration
++ * for AX88179B before this interface driver probes.
++ */
++#if 1
+ module_usb_driver(ax_usb_driver);
+ #else
+ static int ax_usb_config_probe(struct usb_device *udev)

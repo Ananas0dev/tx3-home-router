@@ -1,0 +1,13 @@
+name: Source checks
+on: [push, pull_request]
+permissions:
+  contents: read
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: sudo apt-get update && sudo apt-get install -y clang llvm libbpf-dev linux-libc-dev
+      - run: make -C ebpf all history
+      - run: bash -n scripts/router-watch
+      - run: for f in scripts/router-cake scripts/tx3-qos-v4 scripts/wait-lan-ready config/ppp/ip-up.d/*; do sh -n "$f"; done
