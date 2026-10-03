@@ -6,6 +6,12 @@ The bandwidth was limited, but latency under load was the real problem. With aro
 
 The hardware is an Amlogic S905W with four Cortex-A53 cores, about 787 MiB of usable RAM, one built-in 100 Mbps Ethernet port, and a USB ASIX AX88179B adapter. The project grew from basic CAKE queue management into PPPoE, nftables, a behavioral eBPF classifier, and a small home server.
 
+## AI assistance and feedback
+
+AI generated most of the project-specific code and documentation. I brought the needs, tried things on my own setup, and shared the results to guide the work. I'm still learning, and there may be mistakes or better approaches I haven't discovered. Existing projects and libraries are credited separately.
+
+Suggestions, corrections, alternative solutions, and any helpful notes are welcome. Please [open an issue](https://github.com/Ananas0dev/tx3-home-router/issues) or send a pull request—even pointing me toward an existing tool or explaining a better way would help.
+
 ```mermaid
 flowchart LR
   ISP[ADSL line] --- Modem[HA35 in bridge mode]
@@ -21,34 +27,16 @@ flowchart LR
 - [The engineering story](docs/01-the-problem.md): the initial topology, failed approaches, USB driver work, and queue management.
 - [eBPF source and build instructions](ebpf/README.md): V5D, its shadow variant, and earlier experiments.
 - [USB Ethernet patches](usb-ethernet/README.md): a Linux 6.12 USB-core workaround and a compact ASIX 4.1.0 driver patch.
-- [Reported results](benchmarks/README.md): useful observations with their limits, rather than a fabricated benchmark suite.
+- [Reported results](benchmarks/README.md): observations and their measurement limits.
 - [Operational status](docs/status.md), [recovery](docs/recovery.md), and [roadmap](ROADMAP.md).
 
-## Status and scope
+## Current status
 
-**Live inspection on 2026-10-02 found V4 active at preference 12348, with 450/10000 Kbit/s CAKE.** The [live observation](docs/live-observation.md) supersedes the historical notes for current deployment status. Recovered scripts and service units are included as sanitized references.
+The [2026-10-02 inspection](docs/live-observation.md) found V4 active, shaping at 450 Kbit/s upload and 10 Mbit/s download. V5D is a separate experiment described in the historical notes; its deployment lifecycle remains unfinished.
 
-This is an engineering record and source archive, not an unattended router installer. The notes contain several generations of the deployment. The later Armbian/PPPoE/V5D account takes precedence over the older ImmortalWrt migration plan. Live settings must be checked separately.
+The source and configuration examples are specific to this setup and need review before use. See the [status and evidence](docs/status.md), [reported tests](benchmarks/README.md), and [recovery notes](docs/recovery.md).
 
-In that later account, V5D was attached at TC preference 12347 in both directions on the LAN interface. REALTIME was mapped to AF41; VOICE was intentionally kept at Best Effort after a failed Voice-tin experiment. The notes explicitly say this arrangement was a **temporary canary**, and that persistent services could restore V4 and older shaping rates after reconnect or reboot.
-
-**430/9800 Kbit/s upload/download was the last subjectively validated setting in the notes. 450/10000 was the next experiment.** These are results for one DSL line, not recommended defaults for another connection.
-
-## Documentation
-
-| Chapter | Subject |
-| --- | --- |
-| [01](docs/01-the-problem.md) | The latency problem and project goals |
-| [02](docs/02-tx3-and-armbian.md) | Hardware, OS, and build environment |
-| [03](docs/03-one-legged-router.md) | Why the first topology was insufficient |
-| [04](docs/04-wifi-ap-attempt.md) | Wi-Fi and access-point experiments |
-| [05](docs/05-usb-ethernet-nightmare.md) | The AX88179B investigation |
-| [06](docs/06-ha35-bridge-and-pppoe.md) | Bridge mode, PPPoE, and reconnect behavior |
-| [07](docs/07-cake-sqm.md) | CAKE, ATM framing, and rate tuning |
-| [08](docs/08-ebpf-qos.md) | Behavioral classification and hysteresis |
-| [09](docs/09-home-network-hardening.md) | Deployment boundaries and sanitization |
-| [10](docs/10-benchmarks.md) | Evidence and measurement limits |
-| [11](docs/11-failures-and-lessons.md) | Failures that changed the design |
+For the full story, browse the [documentation index](docs/README.md).
 
 Related projects: [Continuous Calendar](https://github.com/Ananas0dev/continuous-calendar), [LAN Share](https://github.com/Ananas0dev/lan-share), and the [homelab index](https://github.com/Ananas0dev/homelab).
 
